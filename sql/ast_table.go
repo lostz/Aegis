@@ -14,6 +14,7 @@ import (
 type ITable interface {
 	IsTable()
 	GetSchemas() []string
+	GetTables() []string
 }
 
 type ITables []ITable
@@ -26,6 +27,25 @@ func (ts ITables) GetSchemas() []string {
 	var ret []string
 	for _, v := range ts {
 		if r := v.GetSchemas(); r != nil && len(r) != 0 {
+			ret = append(ret, r...)
+		}
+	}
+
+	if len(ret) == 0 {
+		return nil
+	}
+
+	return ret
+}
+
+func (ts ITables) GetTables() []string {
+	if ts == nil && len(ts) == 0 {
+		return nil
+	}
+
+	var ret []string
+	for _, v := range ts {
+		if r := v.GetTables(); r != nil && len(r) != 0 {
 			ret = append(ret, r...)
 		}
 	}
@@ -71,6 +91,29 @@ func (j *JoinTable) GetSchemas() []string {
 
 	return append(l, r...)
 }
+func (j *JoinTable) GetTables() []string {
+
+	if j.Left == nil {
+		panic("join table must have left value")
+	}
+
+	if j.Right == nil {
+		panic("join table must have right value")
+	}
+
+	l := j.Left.GetTables()
+	r := j.Right.GetTables()
+
+	if l == nil && r == nil {
+		return nil
+	} else if l == nil {
+		return r
+	} else if r == nil {
+		return l
+	}
+
+	return append(l, r...)
+}
 
 type ParenTable struct {
 	Table ITable
@@ -81,6 +124,13 @@ func (p *ParenTable) GetSchemas() []string {
 		return nil
 	}
 	return p.Table.GetSchemas()
+}
+
+func (p *ParenTable) GetTables() []string {
+	if p.Table == nil {
+		return nil
+	}
+	return p.Table.GetTables()
 }
 
 type AliasedTable struct {
@@ -94,6 +144,16 @@ func (a *AliasedTable) GetSchemas() []string {
 		return t.GetSchemas()
 	} else if s, can := a.TableOrSubQuery.(*SubQuery); can {
 		return s.SelectStatement.GetSchemas()
+	} else {
+		panic(fmt.Sprintf("alias table has no table_factor or subquery, element type[%T]", a.TableOrSubQuery))
+	}
+}
+
+func (a *AliasedTable) GetTables() []string {
+	if t, ok := a.TableOrSubQuery.(ITable); ok {
+		return t.GetTables()
+	} else if s, can := a.TableOrSubQuery.(*SubQuery); can {
+		return s.SelectStatement.GetTables()
 	} else {
 		panic(fmt.Sprintf("alias table has no table_factor or subquery, element type[%T]", a.TableOrSubQuery))
 	}
@@ -119,6 +179,13 @@ func (s *SimpleTable) GetSchemas() []string {
 		return nil
 	}
 	return []string{string(s.Qualifier)}
+}
+
+func (s *SimpleTable) GetTables() []string {
+	if s.Name == nil || len(s.Name) == 0 {
+		return nil
+	}
+	return []string{string(s.Name)}
 }
 
 type ISimpleTables []ISimpleTable
@@ -151,6 +218,13 @@ func (s *Spname) GetSchemas() []string {
 	}
 
 	return []string{string(s.Qualifier)}
+}
+func (s *Spname) GetTables() []string {
+	if s.Name == nil || len(s.Name) == 0 {
+		return nil
+	}
+
+	return []string{string(s.Name)}
 }
 
 type Spname struct {

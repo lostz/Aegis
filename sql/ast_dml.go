@@ -8,6 +8,7 @@ type ISelect interface {
 	ISelect()
 	IsLocked() bool
 	GetSchemas() []string
+	GetTables() []string
 	IStatement
 }
 
@@ -51,6 +52,10 @@ func (u *Union) GetSchemas() []string {
 	return append(l, r...)
 }
 
+func (u *Union) GetTables() []string {
+	return nil
+}
+
 // SubQuery ---------
 type SubQuery struct {
 	SelectStatement ISelect
@@ -66,6 +71,10 @@ func (s *SubQuery) GetSchemas() []string {
 	}
 
 	return s.SelectStatement.GetSchemas()
+}
+
+func (s *SubQuery) GetTables() []string {
+	return nil
 }
 
 // Select -----------
@@ -94,6 +103,17 @@ func (s *Select) GetSchemas() []string {
 	return ret
 }
 
+func (s *Select) GetTables() []string {
+	ret := make([]string, 0, 8)
+	for _, v := range s.From {
+		r := v.GetTables()
+		if r != nil || len(r) != 0 {
+			ret = append(ret, r...)
+		}
+	}
+	return ret
+}
+
 // ParenSelect ------
 type ParenSelect struct {
 	Select ISelect
@@ -105,6 +125,10 @@ func (p *ParenSelect) IsLocked() bool {
 
 func (p *ParenSelect) GetSchemas() []string {
 	return p.Select.GetSchemas()
+}
+
+func (p *ParenSelect) GetTables() []string {
+	return nil
 }
 
 type LockType int

@@ -768,7 +768,7 @@ import (
 
 
 %type <table_ref> esc_table_ref table_ref table_factor join_table 
-%type <table_ref_list> select_into select_from join_table_list derived_table_list table_alias_ref_list table_wild_list 
+%type <table_ref_list> select_into select_from join_table_list derived_table_list table_alias_ref_list table_wild_list opt_from_clause table_reference_list from_clause
 
 %type <table_to_table> table_to_table
 %type <table_to_table_list> table_to_table_list
@@ -3177,15 +3177,44 @@ select_init2_derived:
   select_part2_derived { $$ = $1 };
 
 select_part2_derived:
-  opt_query_expression_options select_item_list opt_select_from select_lock_type
+          opt_from_clause               /* #1 */
+          opt_where_clause              /* #2 */
+          opt_group_clause              /* #3 */
+          opt_having_clause             /* #4 */
+          opt_order_clause              /* #5 */
+          opt_limit_clause              /* #6 */
+          opt_procedure_analyse_clause  /* #7 */
+          select_lock_type          /* #8 */
   {
-    if $3 == nil {
-        $$ = &Select{From: nil, LockType: $4}
-    } else {
-        $$ = &Select{From: $3.(*Select).From, LockType: $4}
-    }
+        $$ = &Select{From: $1, LockType: $8}
   }
 ;
+
+
+from_clause:
+          FROM table_reference_list { $$= $2; }
+        ;
+
+opt_from_clause:
+          /* empty */ { $$= nil; }
+        | from_clause
+        ;
+
+
+table_reference_list:
+          join_table_list
+          {
+          { $$ = $1 }
+          }
+        | DUAL_SYM { $$ = nil  }
+          /* oracle compatibility: oracle always requires FROM clause,
+             and DUAL is system table without fields.
+             Is "SELECT 1 FROM DUAL" any better than "SELECT 1" ?
+          Hmmm :) */
+        ;
+
+
+
 
 select_derived:
   get_select_lex derived_table_list { $$ = &Select{From: $2} };
@@ -3298,7 +3327,18 @@ where_clause:
  
 | WHERE expr;
 
+opt_where_clause:
+ 
+| WHERE expr;
+
+
+
 having_clause:
+ 
+| HAVING expr;
+
+
+opt_having_clause:
  
 | HAVING expr;
 
@@ -3308,6 +3348,9 @@ opt_escape:
 
 group_clause:
  
+| GROUP_SYM BY group_list olap_opt;
+
+opt_group_clause:
 | GROUP_SYM BY group_list olap_opt;
 
 group_list:
@@ -3408,6 +3451,9 @@ dec_num:
 | FLOAT_NUM;
 
 procedure_analyse_clause:
+ 
+| PROCEDURE_SYM ANALYSE_SYM '(' opt_procedure_analyse_params ')';
+opt_procedure_analyse_clause:
  
 | PROCEDURE_SYM ANALYSE_SYM '(' opt_procedure_analyse_params ')';
 
@@ -4855,9 +4901,6 @@ subselect_start:
 subselect_end:
  ;
 
-opt_query_expression_options:
- 
-| query_expression_option_list;
 
 query_expression_option_list:
   query_expression_option_list query_expression_option

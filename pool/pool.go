@@ -6,9 +6,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lostz/Aegis/backend"
 	"github.com/lostz/Aegis/mysql"
 )
+
+type Client interface {
+	Connect(addr string, user string, password string, db string) error
+	Execute(command string, args ...interface{}) (*mysql.Result, error)
+	Rollback() error
+	CollationId() uint32
+	Close() error
+}
 
 var nowFunc = time.Now
 var ErrPoolClosed = errors.New("connection pool closed")
@@ -16,54 +23,35 @@ var ErrPoolExhausted = errors.New("connection pool exhausted")
 var ErrConnClosed = errors.New("connection closed")
 
 type Pool struct {
-	Dial func() (backend.Client, error)
-	// TestOnBorrow is an optional application supplied function for checking
-	// the health of an idle connection before the connection is used again by
-	// the application. Argument t is the time that the connection was returned
-	// to the pool. If the function returns an error, then the connection is
-	// closed.
-	TestOnBorrow func(c backend.Client, t time.Time) error
-
-	// Maximum number of idle connections in the pool.
-	MaxIdle int
-
-	// Maximum number of connections allocated by the pool at a given time.
-	// When zero, there is no limit on the number of connections in the pool.
-	MaxActive int
-
-	// Close connections after remaining idle for this duration. If the value
-	// is zero, then idle connections are not closed. Applications should set
-	// the timeout to a value less than the server's timeout.
-	IdleTimeout time.Duration
-
-	// If Wait is true and the pool is at the MaxActive limit, then Get() waits
-	// for a connection to be returned to the pool before returning.
-	Wait bool
-
-	// mu protects fields defined below.
-	mu     sync.Mutex
-	cond   *sync.Cond
-	closed bool
-	active int
-
-	// Stack of idleConn with most recently used at the front.
-	idle list.List
+	Dial         func() (Client, error)
+	TestOnBorrow func(c Client, t time.Time) error
+	MaxIdle      int
+	MaxActive    int
+	IdleTimeout  time.Duration
+	Wait         bool
+	mu           sync.Mutex
+	cond         *sync.Cond
+	closed       bool
+	active       int
+	idle         list.List
+	busy         map[uint32]Client
 }
 
 type idleConn struct {
-	c backend.Client
+	c Client
 	t time.Time
 }
 
-func NewPool(newFn func() (backend.Client, error), maxIdle int) *Pool {
+func NewPool(newFn func() (Client, error), maxIdle int) *Pool {
 	return &Pool{Dial: newFn, MaxIdle: maxIdle}
 }
 
-func (self *Pool) Get() (backend.Client, error) {
+func (self *Pool) Get() (Client, error) {
 	c, err := self.get()
 	if err != nil {
 		return nil, err
 	}
+	go self.putBusy(c)
 	return &pooledConnection{p: self, c: c}, nil
 }
 
@@ -97,10 +85,8 @@ func (self *Pool) release() {
 	}
 }
 
-func (self *Pool) get() (backend.Client, error) {
+func (self *Pool) get() (Client, error) {
 	self.mu.Lock()
-
-	// Prune stale connections.
 
 	if timeout := self.IdleTimeout; timeout > 0 {
 		for i, n := 0, self.idle.Len(); i < n; i++ {
@@ -122,8 +108,6 @@ func (self *Pool) get() (backend.Client, error) {
 
 	for {
 
-		// Get idle connection.
-
 		for i, n := 0, self.idle.Len(); i < n; i++ {
 			e := self.idle.Front()
 			if e == nil {
@@ -141,14 +125,10 @@ func (self *Pool) get() (backend.Client, error) {
 			self.release()
 		}
 
-		// Check for pool closed before dialing a new connection.
-
 		if self.closed {
 			self.mu.Unlock()
 			return nil, ErrPoolClosed
 		}
-
-		// Dial new connection if under limit.
 
 		if self.MaxActive == 0 || self.active < self.MaxActive {
 			dial := self.Dial
@@ -176,7 +156,16 @@ func (self *Pool) get() (backend.Client, error) {
 	}
 }
 
-func (self *Pool) put(c backend.Client, forceClose bool) error {
+func (self *Pool) putBusy(c Client) {
+	self.busy[c.CollationId()] = c
+}
+
+func (self *Pool) removeBusy(c Client) {
+	delete(self.busy, c.CollationId())
+
+}
+
+func (self *Pool) put(c Client, forceClose bool) error {
 	self.mu.Lock()
 	if !self.closed && !forceClose {
 		self.idle.PushFront(idleConn{t: nowFunc(), c: c})
@@ -192,17 +181,19 @@ func (self *Pool) put(c backend.Client, forceClose bool) error {
 			self.cond.Signal()
 		}
 		self.mu.Unlock()
+		go self.removeBusy(c)
 		return nil
 	}
 
 	self.release()
 	self.mu.Unlock()
+	go self.removeBusy(c)
 	return c.Close()
 }
 
 type pooledConnection struct {
 	p *Pool
-	c backend.Client
+	c Client
 }
 
 func (self *pooledConnection) Connect(addr string, user string, password string, db string) error {
@@ -213,6 +204,10 @@ func (self *pooledConnection) Execute(command string, args ...interface{}) (*mys
 }
 func (self *pooledConnection) Rollback() error {
 	return self.c.Rollback()
+}
+
+func (self *pooledConnection) CollationId() uint32 {
+	return self.c.CollationId()
 }
 
 func (self *pooledConnection) Close() error {
